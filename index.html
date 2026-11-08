@@ -1,0 +1,1082 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pedal Street View</title>
+<style>
+  :root { --bg:#0f1115; --panel:#181b22; --line:#2a2f3a; --text:#e8eaf0; --muted:#9aa3b2; --accent:#4cc38a; --warn:#f0b429; --err:#ef5350; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:16px/1.45 system-ui, sans-serif; }
+  main { max-width:760px; margin:0 auto; padding:16px; }
+  h1 { font-size:22px; margin:8px 0 16px; }
+  h2 { font-size:17px; margin:20px 0 8px; color:var(--muted); font-weight:600; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px; margin-bottom:14px; }
+  label { display:block; margin:10px 0 4px; color:var(--muted); font-size:14px; }
+  input, select { width:100%; padding:10px; border-radius:8px; border:1px solid var(--line); background:#0b0d11; color:var(--text); font-size:16px; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; }
+  .row > * { flex:1 1 160px; }
+  button { padding:12px 16px; border-radius:10px; border:0; background:var(--accent); color:#06140d; font-weight:700; font-size:16px; cursor:pointer; }
+  button.sec { background:#2a2f3a; color:var(--text); }
+  .big { font-size:72px; font-weight:800; text-align:center; letter-spacing:-2px; }
+  .muted { color:var(--muted); font-size:14px; }
+  .status { padding:10px; border-radius:8px; background:#0b0d11; border:1px solid var(--line); margin-top:10px; min-height:20px; }
+  .code { font-size:44px; font-weight:800; letter-spacing:8px; text-align:center; color:var(--accent); }
+  #stage { width:100%; height:55vh; border-radius:12px; overflow:hidden; background:#000; position:relative; touch-action:none; }
+  #vrSlot { position:relative; height:60px; margin-top:10px; }
+  #vrSlot button { position:static !important; }
+  #pocket { position:fixed; inset:0; background:#000; color:#333; display:none; align-items:center; justify-content:center; text-align:center; z-index:10; font-size:14px; user-select:none; }
+  [hidden] { display:none !important; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+
+<!-- ROLE CHOOSER -->
+<main id="home">
+  <h1>🚴 Pedal Street View</h1>
+  <div class="card">
+    <p>Open this same page on both devices.</p>
+    <div class="row">
+      <button id="goPhone">I'm the phone (sensor)</button>
+      <button id="goViewer" class="sec">I'm the headset (viewer)</button>
+    </div>
+  </div>
+</main>
+
+<!-- PHONE -->
+<main id="phone" hidden>
+  <h1>📱 Cadence sensor</h1>
+  <div class="card">
+    <div class="big" id="pRpm">0</div>
+    <div class="muted" style="text-align:center">RPM · signal quality <span id="pQual">–</span></div>
+  </div>
+  <div class="card">
+    <label>Code shown in the headset</label>
+    <div class="row">
+      <input id="pCode" inputmode="numeric" maxlength="4" placeholder="1234">
+      <button id="pConnect">Connect</button>
+    </div>
+    <div class="status" id="pStatus">Not connected</div>
+  </div>
+  <div class="card">
+    <h2 style="margin-top:0">Send settings to headset (optional, saves typing on the Quest)</h2>
+    <label>Mapillary access token (MLY|…)</label>
+    <input id="pMly" type="password" autocomplete="off">
+    <label>Google Maps API key (only if using Google)</label>
+    <input id="pKey" type="password" autocomplete="off">
+    <label>Start: Mapillary image link, “lat, lng”, or a Google Maps link</label>
+    <input id="pStart" placeholder="https://www.mapillary.com/app/?pKey=…">
+    <div style="margin-top:10px"><button class="sec" id="pSend">Send to headset</button></div>
+  </div>
+  <div class="card">
+    <div class="row">
+      <button id="pResume" class="sec">▶ Continue last ride</button>
+      <button id="pRandom" class="sec">🎲 Random ride</button>
+    </div>
+    <p class="muted">Both work while you're in VR.</p>
+  </div>
+  <div class="card">
+    <button id="pPocket" style="width:100%">Pocket mode (black screen, stays awake)</button>
+    <p class="muted">Phone goes in the thigh pocket, any orientation. Keep this page open — the screen must stay on or Android stops the sensors.</p>
+  </div>
+</main>
+<div id="pocket">Pocket mode — sending cadence<br>press and hold 1.5 s to exit</div>
+
+<!-- VIEWER -->
+<main id="viewer" hidden>
+  <h1>🥽 Pedal Street View</h1>
+  <div class="card">
+    <h2 style="margin-top:0">Saved rides</h2>
+    <button id="vResumeLast" style="width:100%">▶ Continue last ride</button>
+    <label>Previous rides (saved automatically on this device)</label>
+    <select id="vTracks"></select>
+    <div class="row" style="margin-top:10px">
+      <button id="vResumeSel" class="sec">Resume from its end</button>
+      <button id="vGpx" class="sec">Download GPX</button>
+      <button id="vDelTrack" class="sec">Delete</button>
+    </div>
+  </div>
+  <div class="card">
+    <div class="muted" style="text-align:center">Phone pairing code (optional — only if you use the phone as sensor or remote)</div>
+    <div class="code" id="vCode">····</div>
+    <div class="status" id="vLink">Waiting for phone…</div>
+  </div>
+  <div class="card">
+    <label>Imagery source</label>
+    <select id="vSrc">
+      <option value="mapillary" selected>Mapillary (free, open, 360° only)</option>
+      <option value="google">Google Street View (needs billing account)</option>
+    </select>
+    <div id="vMlyBox">
+      <label>Mapillary access token (MLY|…)</label>
+      <input id="vMly" type="password" autocomplete="off">
+    </div>
+    <div id="vKeyBox" hidden>
+      <label>Google Maps API key (Map Tiles API enabled)</label>
+      <input id="vKey" type="password" autocomplete="off">
+    </div>
+    <label>Start: Mapillary image link, “lat, lng”, or a Google Maps link</label>
+    <input id="vStart" placeholder="https://www.mapillary.com/app/?pKey=…">
+    <div class="row">
+      <div><label>Image quality</label>
+        <select id="vZoom">
+          <option value="1">Low</option>
+          <option value="2" selected>Medium</option>
+          <option value="3">High</option>
+        </select></div>
+      <div><label>Metres between image stops</label><input id="vStep" type="number" value="15" min="3" max="100"></div>
+    </div>
+    <div class="row">
+      <div><label>Daily tile budget (Google only)</label><input id="vBudget" type="number" value="3300" min="0"></div>
+      <div><label>km/h per RPM</label><input id="vKpr" type="number" value="0.3" step="0.01" min="0.05"></div>
+    </div>
+    <div class="row">
+      <div><label>Cadence source</label>
+        <select id="vSource">
+          <option value="controller" selected>Quest controller strapped to thigh</option>
+          <option value="phone">Phone in pocket</option>
+          <option value="manual">Manual (testing)</option>
+        </select></div>
+      <div><label>Manual RPM: <span id="vManVal">0</span></label><input id="vManual" type="range" min="0" max="120" value="0"></div>
+    </div>
+    <div class="muted" style="margin-top:10px" id="vUsedLine">Google tiles used today: <span id="vUsed">0</span></div>
+    <div class="row" style="margin-top:12px">
+      <button id="vStartBtn">Load start point</button>
+      <button id="vRandomBtn" class="sec">🎲 Random ride</button>
+    </div>
+    <div class="status" id="vStatus">Set your token and start point, then load.</div>
+  </div>
+  <div id="stage"></div>
+  <div id="vrSlot"></div>
+  <p class="muted">Look where you want to go at intersections. Drag the preview to look around on a flat screen.</p>
+</main>
+
+<script type="module">
+import * as THREE from 'three';
+import { VRButton } from 'three/addons/webxr/VRButton.js';
+
+const $ = id => document.getElementById(id);
+const store = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} },
+};
+const PEER_PREFIX = 'pedalsv-';
+
+// Settings can ride in the URL hash (never sent to any server), e.g.
+//   https://you.github.io/pedal-streetview/#mly=MLY|123...&start=48.85,2.35
+// They're saved on the device, so a bookmark of that link fills everything in.
+(() => {
+  const h = new URLSearchParams(location.hash.slice(1));
+  const map = { mly: 'pedalsv-mly', gkey: 'pedalsv-key', start: 'pedalsv-start' };
+  for (const [p, k] of Object.entries(map)) if (h.get(p)) store.set(k, h.get(p));
+})();
+
+/* =====================================================================
+   CADENCE ESTIMATOR
+   Takes a 3-axis signal (accelerometer m/s² or controller position m),
+   finds its main axis of motion, and measures the period by
+   autocorrelation. One thigh oscillation = one pedal revolution.
+   ===================================================================== */
+class CadenceEstimator {
+  constructor({ windowMs = 6000, minRpm = 30, maxRpm = 180, minStd = 0.3 } = {}) {
+    Object.assign(this, { windowMs, minRpm, maxRpm, minStd });
+    this.t = []; this.x = []; this.y = []; this.z = [];
+    this.rpm = 0; this.quality = 0;
+  }
+  push(t, x, y, z) {
+    this.t.push(t); this.x.push(x); this.y.push(y); this.z.push(z);
+    const cut = t - this.windowMs; let i = 0;
+    while (i < this.t.length && this.t[i] < cut) i++;
+    if (i > 0) { this.t.splice(0, i); this.x.splice(0, i); this.y.splice(0, i); this.z.splice(0, i); }
+  }
+  estimate() {
+    const n = this.t.length;
+    if (n < 30) return this._set(0, 0);
+    const dur = (this.t[n - 1] - this.t[0]) / 1000;
+    if (dur < 2.5) return this._set(0, 0);
+    const fs = 50, m = Math.floor(dur * fs);
+    const X = new Float64Array(m), Y = new Float64Array(m), Z = new Float64Array(m);
+    let j = 0;
+    for (let k = 0; k < m; k++) {
+      const tk = this.t[0] + k * 1000 / fs;
+      while (j < n - 2 && this.t[j + 1] < tk) j++;
+      const t0 = this.t[j], t1 = this.t[j + 1];
+      const f = t1 > t0 ? Math.min(1, Math.max(0, (tk - t0) / (t1 - t0))) : 0;
+      X[k] = this.x[j] + (this.x[j + 1] - this.x[j]) * f;
+      Y[k] = this.y[j] + (this.y[j + 1] - this.y[j]) * f;
+      Z[k] = this.z[j] + (this.z[j + 1] - this.z[j]) * f;
+    }
+    for (const A of [X, Y, Z]) { let s = 0; for (const v of A) s += v; s /= m; for (let k = 0; k < m; k++) A[k] -= s; }
+    let cxx = 0, cyy = 0, czz = 0, cxy = 0, cxz = 0, cyz = 0;
+    for (let k = 0; k < m; k++) {
+      cxx += X[k] * X[k]; cyy += Y[k] * Y[k]; czz += Z[k] * Z[k];
+      cxy += X[k] * Y[k]; cxz += X[k] * Z[k]; cyz += Y[k] * Z[k];
+    }
+    let v = cxx >= cyy && cxx >= czz ? [1, 0.1, 0.1] : cyy >= czz ? [0.1, 1, 0.1] : [0.1, 0.1, 1];
+    for (let it = 0; it < 25; it++) {
+      const w = [cxx * v[0] + cxy * v[1] + cxz * v[2], cxy * v[0] + cyy * v[1] + cyz * v[2], cxz * v[0] + cyz * v[1] + czz * v[2]];
+      const nn = Math.hypot(w[0], w[1], w[2]) || 1; v = [w[0] / nn, w[1] / nn, w[2] / nn];
+    }
+    const s = new Float64Array(m); let e = 0;
+    for (let k = 0; k < m; k++) { s[k] = X[k] * v[0] + Y[k] * v[1] + Z[k] * v[2]; e += s[k] * s[k]; }
+    const variance = e / m;
+    if (Math.sqrt(variance) < this.minStd) return this._set(0, 0);
+    const lagMin = Math.floor(fs * 60 / this.maxRpm);
+    const lagMax = Math.min(Math.ceil(fs * 60 / this.minRpm), Math.floor(m * 0.6));
+    if (lagMax <= lagMin + 2) return this._set(0, 0);
+    const r = new Float64Array(lagMax + 2);
+    for (let L = lagMin - 1; L <= lagMax + 1; L++) {
+      let acc = 0; for (let k = 0; k + L < m; k++) acc += s[k] * s[k + L];
+      r[L] = acc / ((m - L) * variance);
+    }
+    let rmax = -1; const peaks = [];
+    for (let L = lagMin; L <= lagMax; L++) {
+      if (r[L] > r[L - 1] && r[L] >= r[L + 1]) { peaks.push(L); if (r[L] > rmax) rmax = r[L]; }
+    }
+    if (rmax < 0.35) return this._set(0, Math.max(0, rmax));
+    const L = peaks.find(p => r[p] >= 0.85 * rmax);
+    const a = r[L - 1], b = r[L], c = r[L + 1], den = a - 2 * b + c;
+    const lag = L + (den !== 0 ? 0.5 * (a - c) / den : 0);
+    return this._set(60 * fs / lag, rmax);
+  }
+  _set(rpm, q) {
+    this.quality = q;
+    if (rpm <= 0) { this.rpm *= 0.5; if (this.rpm < 5) this.rpm = 0; }
+    else this.rpm = this.rpm ? this.rpm * 0.5 + rpm * 0.5 : rpm;
+    return this.rpm;
+  }
+}
+
+/* =====================================================================
+   PHONE MODE
+   ===================================================================== */
+function startPhone() {
+  $('home').hidden = true; $('phone').hidden = false;
+  const status = t => $('pStatus').textContent = t;
+  const est = new CadenceEstimator({ minStd: 0.25 });
+  let peer = null, conn = null, samples = 0, wantConn = false, code = '';
+
+  $('pCode').value = store.get('pedalsv-code', '');
+  $('pMly').value = store.get('pedalsv-mly', '');
+  $('pKey').value = store.get('pedalsv-key', '');
+  $('pStart').value = store.get('pedalsv-start', '');
+
+  window.addEventListener('devicemotion', e => {
+    const a = e.accelerationIncludingGravity;
+    if (!a || a.x == null) return;
+    est.push(performance.now(), a.x, a.y, a.z); samples++;
+  });
+  setTimeout(() => { if (!samples) status('⚠ No motion sensor data. The page must be opened over https.'); }, 2500);
+
+  setInterval(() => {
+    const rpm = est.estimate();
+    $('pRpm').textContent = Math.round(rpm);
+    $('pQual').textContent = est.quality ? Math.round(est.quality * 100) + '%' : '–';
+    if (conn && conn.open) conn.send({ type: 'rpm', rpm, q: est.quality });
+  }, 250);
+
+  async function requestWake() { try { await navigator.wakeLock.request('screen'); } catch (e) {} }
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && wantConn) requestWake(); });
+
+  function connect() {
+    if (peer) { try { peer.destroy(); } catch (e) {} }
+    status('Connecting…');
+    peer = new Peer();
+    peer.on('open', () => {
+      conn = peer.connect(PEER_PREFIX + code);
+      conn.on('open', () => status('✔ Connected — pocket the phone and ride'));
+      conn.on('close', () => { status('Disconnected — retrying…'); setTimeout(() => wantConn && connect(), 3000); });
+      conn.on('error', err => status('Link error: ' + err));
+    });
+    peer.on('error', err => {
+      status(err.type === 'peer-unavailable' ? 'Headset not found — check the code (retrying…)' : 'Error: ' + (err.type || err));
+      setTimeout(() => wantConn && (!conn || !conn.open) && connect(), 4000);
+    });
+  }
+
+  $('pConnect').onclick = () => {
+    code = $('pCode').value.trim();
+    if (!/^\d{4}$/.test(code)) return status('Enter the 4-digit code shown in the headset.');
+    store.set('pedalsv-code', code);
+    wantConn = true; requestWake(); connect();
+  };
+  $('pSend').onclick = () => {
+    const mlyToken = $('pMly').value.trim(), key = $('pKey').value.trim(), start = $('pStart').value.trim();
+    store.set('pedalsv-mly', mlyToken); store.set('pedalsv-key', key); store.set('pedalsv-start', start);
+    if (!conn || !conn.open) return status('Connect to the headset first.');
+    conn.send({ type: 'config', mlyToken, key, start }); status('✔ Settings sent to headset');
+  };
+  $('pRandom').onclick = () => {
+    if (!conn || !conn.open) return status('Connect to the headset first.');
+    conn.send({ type: 'random' }); status('🎲 Asked headset for a random ride');
+  };
+  $('pResume').onclick = () => {
+    if (!conn || !conn.open) return status('Connect to the headset first.');
+    conn.send({ type: 'resume' }); status('▶ Asked headset to continue the last ride');
+  };
+
+  const pocket = $('pocket'); let holdTimer = null;
+  $('pPocket').onclick = () => { pocket.style.display = 'flex'; requestWake(); };
+  pocket.addEventListener('pointerdown', () => { holdTimer = setTimeout(() => pocket.style.display = 'none', 1500); });
+  ['pointerup', 'pointercancel', 'pointerleave'].forEach(ev => pocket.addEventListener(ev, () => clearTimeout(holdTimer)));
+}
+
+/* =====================================================================
+   GEO HELPERS
+   ===================================================================== */
+const deg = THREE.MathUtils.degToRad;
+const angDiff = (a, b) => ((b - a + 540) % 360) - 180;
+function haversine(a, b) {
+  const R = 6371000, p1 = deg(a.lat), p2 = deg(b.lat), dp = deg(b.lat - a.lat), dl = deg(b.lng - a.lng);
+  const h = Math.sin(dp / 2) ** 2 + Math.cos(p1) * Math.cos(p2) * Math.sin(dl / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+function bearing(a, b) {
+  const p1 = deg(a.lat), p2 = deg(b.lat), dl = deg(b.lng - a.lng);
+  const y = Math.sin(dl) * Math.cos(p2), x = Math.cos(p1) * Math.sin(p2) - Math.sin(p1) * Math.cos(p2) * Math.cos(dl);
+  return (THREE.MathUtils.radToDeg(Math.atan2(y, x)) + 360) % 360;
+}
+function parseStart(s) {
+  s = (s || '').trim();
+  const pk = s.match(/[?&]pKey=(\d+)/) || s.match(/^(\d{6,})$/);
+  const ll = s.match(/[?&]lat=(-?\d+(?:\.\d+)?).*?[?&]lng=(-?\d+(?:\.\d+)?)/)
+    || s.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/) || s.match(/!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/)
+    || s.match(/^(-?\d+\.\d+)\s*,\s*(-?\d+\.\d+)$/);
+  if (!pk && !ll) return null;
+  const h = s.match(/,(\d+(?:\.\d+)?)h[,/]/);
+  return { imageId: pk ? pk[1] : null, lat: ll ? +ll[1] : null, lng: ll ? +ll[2] : null, heading: h ? +h[1] : null };
+}
+
+// Draw an ImageBitmap into a canvas (max 4096 px wide for Quest) → texture
+function bitmapToTexture(bmp) {
+  const w = Math.min(4096, bmp.width), h = Math.round(bmp.height * w / bmp.width);
+  const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+  cv.getContext('2d').drawImage(bmp, 0, 0, w, h);
+  bmp.close && bmp.close();
+  return canvasToTexture(cv);
+}
+function canvasToTexture(cv) {
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.minFilter = THREE.LinearFilter; tex.generateMipmaps = false;
+  return tex;
+}
+
+/* =====================================================================
+   SOURCE 1: MAPILLARY (free, CC-BY-SA, follows capture sequences)
+   A "node" is { id, lat, lng, center (compass ° at image centre), seq, urls, credit, route }
+   ===================================================================== */
+const MLY = {
+  token: '', cache: new Map(), seqCache: new Map(),
+  FIELDS: 'id,geometry,computed_geometry,computed_compass_angle,compass_angle,is_pano,sequence,thumb_1024_url,thumb_2048_url,thumb_original_url,creator',
+  async get(path, params = {}) {
+    const u = new URL('https://graph.mapillary.com/' + path);
+    u.searchParams.set('access_token', this.token);
+    for (const [k, v] of Object.entries(params)) u.searchParams.set(k, v);
+    const r = await fetch(u);
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error('Mapillary: ' + (j.error?.message || 'HTTP ' + r.status));
+    return j;
+  },
+  norm(j) {
+    const id = String(j.id);
+    const full = 'thumb_2048_url' in j || 'thumb_1024_url' in j || 'thumb_original_url' in j;
+    const old = this.cache.get(id);
+    if (old && old.full && !full) return old;
+    const g = (j.computed_geometry || j.geometry || {}).coordinates || [0, 0];
+    const n = {
+      id, full, lat: g[1], lng: g[0], center: j.computed_compass_angle ?? j.compass_angle ?? 0,
+      pano: !!j.is_pano, seq: j.sequence,
+      urls: { 1: j.thumb_1024_url, 2: j.thumb_2048_url, 3: j.thumb_original_url || j.thumb_2048_url },
+      credit: j.creator?.username || '',
+    };
+    this.cache.set(id, n); return n;
+  },
+  async one(id) {
+    const c = this.cache.get(id); if (c && c.full) return c;
+    return this.norm(await this.get(id, { fields: this.FIELDS }));
+  },
+  async many(ids) {
+    const need = ids.filter(id => !(this.cache.get(id)?.full));
+    for (let i = 0; i < need.length; i += 50) {
+      const chunk = need.slice(i, i + 50);
+      try {
+        const j = await this.get('', { ids: chunk.join(','), fields: this.FIELDS });
+        for (const id of chunk) if (j[id]) this.norm(j[id]);
+      } catch (e) {
+        await Promise.all(chunk.map(id => this.one(id).catch(() => null)));
+      }
+    }
+  },
+  async seqIds(seq) {
+    if (this.seqCache.has(seq)) return this.seqCache.get(seq);
+    const j = await this.get('image_ids', { sequence_id: seq });
+    const ids = (j.data || []).map(d => String(d.id));
+    this.seqCache.set(seq, ids); return ids;
+  },
+  async near(lat, lng, r) {
+    const bbox = [lng - r, lat - r, lng + r, lat + r].map(v => v.toFixed(6)).join(',');
+    const j = await this.get('images', { bbox, is_pano: 'true', limit: '200', fields: 'id,geometry,computed_geometry,computed_compass_angle,compass_angle,is_pano,sequence' });
+    return (j.data || []).map(d => this.norm(d));
+  },
+};
+
+const MapillarySource = {
+  name: 'mapillary',
+  async init(c) { if (!c.mlyToken) throw new Error('Enter your Mapillary access token.'); MLY.token = c.mlyToken; },
+
+  // heading of travel when moving `dir` along the sequence from idx
+  async dirHeading(ids, idx, dir) {
+    const k = Math.min(ids.length - 1, Math.max(0, idx + dir * 3));
+    if (k === idx) return null;
+    await MLY.many([ids[idx], ids[k]]);
+    const a = MLY.cache.get(ids[idx]), b = MLY.cache.get(ids[k]);
+    if (!a || !b || haversine(a, b) < 0.5) return null;
+    return bearing(a, b);
+  },
+
+  async start(s) {
+    let img = null;
+    if (s.imageId) img = await MLY.one(s.imageId);
+    else {
+      for (const r of [0.0005, 0.0015, 0.004]) {
+        const list = (await MLY.near(s.lat, s.lng, r)).filter(n => n.pano);
+        if (list.length) { list.sort((a, b) => haversine(s, a) - haversine(s, b)); img = await MLY.one(list[0].id); break; }
+      }
+    }
+    if (!img) throw new Error('No 360° Mapillary imagery near that point. Browse mapillary.com with the 360° filter on and paste an image link.');
+    if (!img.pano) throw new Error('That Mapillary image is not a 360° panorama. Pick one from a 360° sequence.');
+    const ids = await MLY.seqIds(img.seq);
+    const idx = Math.max(0, ids.indexOf(img.id));
+    let dir = idx === ids.length - 1 ? -1 : 1;
+    const fwdH = await this.dirHeading(ids, idx, dir);
+    if (s.heading != null && fwdH != null && Math.abs(angDiff(fwdH, s.heading)) > 90) dir = -dir;
+    const heading = (await this.dirHeading(ids, idx, dir)) ?? s.heading ?? img.center;
+    return { node: { ...img, route: { ids, idx, dir } }, heading };
+  },
+
+  // jump to another 360° sequence nearby that heads toward `aim`
+  async branch(cur, aim) {
+    const list = (await MLY.near(cur.lat, cur.lng, 0.0004))
+      .filter(n => n.pano && n.seq !== cur.seq && haversine(cur, n) < 30);
+    let best = null, bestScore = 1e9;
+    for (const n of list) for (const dir of [1, -1]) {
+      const h = dir > 0 ? n.center : n.center + 180, off = Math.abs(angDiff(h, aim));
+      const score = off + haversine(cur, n);
+      if (off < 35 && score < bestScore) { best = { n, dir }; bestScore = score; }
+    }
+    if (!best) return null;
+    const ids = await MLY.seqIds(best.n.seq);
+    const idx = ids.indexOf(best.n.id); if (idx < 0) return null;
+    const full = await MLY.one(best.n.id);
+    let dir = best.dir, h = await this.dirHeading(ids, idx, dir);
+    if (h != null && Math.abs(angDiff(h, aim)) > 90) { dir = -dir; h = await this.dirHeading(ids, idx, dir); }
+    return { node: { ...full, route: { ids, idx, dir } }, dist: Math.max(1, haversine(cur, full)), heading: h ?? aim };
+  },
+
+  async next(from, travel, aim, step) {
+    if (Math.abs(angDiff(travel, aim)) > 40) {
+      const b = await this.branch(from, aim).catch(() => null);
+      if (b) return b;
+    }
+    let { ids, idx, dir } = from.route, cur = from, dist = 0, heading = travel, flips = 0;
+    while (dist < step) {
+      const end = dir > 0 ? ids.length - 1 : 0;
+      if (idx === end) {
+        const b = await this.branch(cur, heading).catch(() => null);
+        if (b) { b.dist += dist; return b; }
+        if (cur !== from || flips > 0 || ids.length < 2) break;
+        dir = -dir; flips++; heading = (heading + 180) % 360; continue;   // dead end → U-turn
+      }
+      const ahead = [];
+      for (let k = 1; k <= 50; k++) { const j = idx + dir * k; if (j < 0 || j >= ids.length) break; ahead.push(ids[j]); }
+      await MLY.many(ahead);
+      idx += dir;
+      const n = MLY.cache.get(ids[idx]);
+      if (!n || !n.pano || !n.full) continue;
+      const d = haversine(cur, n);
+      if (d > 0.5) heading = bearing(cur, n);
+      dist += d; cur = n;
+    }
+    if (cur === from) return null;
+    return { node: { ...cur, route: { ids, idx, dir } }, dist: Math.max(1, dist), heading };
+  },
+
+  // random start near (lat,lng): a 360° image with at least ~40 images of road ahead
+  async findRandom(lat, lng) {
+    for (const r of [0.003, 0.01]) {
+      const list = (await MLY.near(lat, lng, r)).filter(n => n.pano && n.seq);
+      const seqs = [...new Set(list.map(n => n.seq))].sort(() => Math.random() - 0.5).slice(0, 4);
+      for (const seq of seqs) {
+        const ids = await MLY.seqIds(seq);
+        if (ids.length < 40) continue;
+        const k = Math.floor(Math.random() * (ids.length - 40));
+        return { imageId: ids[k], lat: null, lng: null, heading: null };
+      }
+    }
+    return null;
+  },
+
+  async texture(node, q) {
+    const url = node.urls[q] || node.urls[2] || node.urls[1];
+    if (!url) throw new Error('Mapillary image has no download URL.');
+    const r = await fetch(url);
+    if (!r.ok) throw new Error('Mapillary image HTTP ' + r.status);
+    return bitmapToTexture(await createImageBitmap(await r.blob()));
+  },
+  credit(node) { return `Mapillary${node.credit ? ' · ' + node.credit : ''} · CC BY-SA`; },
+};
+
+/* =====================================================================
+   SOURCE 2: GOOGLE STREET VIEW (Map Tiles API, billed beyond free tier)
+   ===================================================================== */
+class BudgetError extends Error { constructor() { super('Daily tile budget reached — new images stop loading until tomorrow.'); } }
+const budget = {
+  limit: 3300,
+  key() { const d = new Date(); return `pedalsv-tiles-${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`; },
+  used() { return store.get(this.key(), 0); },
+  canSpend(n) { return this.used() + n <= this.limit; },
+  spend(n) { store.set(this.key(), this.used() + n); $('vUsed').textContent = this.used(); },
+};
+
+const SV = {
+  key: '', session: null, metaCache: new Map(),
+  async init(key) {
+    this.key = key;
+    const r = await fetch(`https://tile.googleapis.com/v1/createSession?key=${encodeURIComponent(key)}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mapType: 'streetview', language: 'en-US', region: 'US' }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error('Google: ' + (j.error?.message || 'createSession HTTP ' + r.status));
+    this.session = j.session;
+  },
+  q() { return `session=${encodeURIComponent(this.session)}&key=${encodeURIComponent(this.key)}`; },
+  async findPano(lat, lng, radius = 50) {
+    if (!budget.canSpend(1)) throw new BudgetError();
+    budget.spend(1);
+    const r = await fetch(`https://tile.googleapis.com/v1/streetview/panoIds?${this.q()}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ locations: [{ lat, lng }], radius }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error('Google: ' + (j.error?.message || 'panoIds HTTP ' + r.status));
+    const id = j.panoIds && j.panoIds[0];
+    if (!id) throw new Error(`No Street View within ${radius} m of that point. Try a spot on a road.`);
+    return id;
+  },
+  async meta(id) {
+    if (this.metaCache.has(id)) return this.metaCache.get(id);
+    const r = await fetch(`https://tile.googleapis.com/v1/streetview/metadata?${this.q()}&panoId=${encodeURIComponent(id)}`);
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error('Google: ' + (j.error?.message || 'metadata HTTP ' + r.status));
+    this.metaCache.set(id, j);
+    return j;
+  },
+  tileUrl(id, z, x, y) {
+    return `https://tile.googleapis.com/v1/streetview/tiles/${z}/${x}/${y}?${this.q()}&panoId=${encodeURIComponent(id)}`;
+  },
+};
+
+async function loadGooglePano(m, zoom) {
+  const tw = m.tileWidth || 512, th = m.tileHeight || 512;
+  const maxZ = Math.max(0, Math.ceil(Math.log2(m.imageWidth / tw)));
+  const z = Math.min(zoom, maxZ), scale = 2 ** (maxZ - z);
+  const w = Math.round(m.imageWidth / scale), h = Math.round(m.imageHeight / scale);
+  const cols = Math.ceil(w / tw), rows = Math.ceil(h / th);
+  if (!budget.canSpend(cols * rows)) throw new BudgetError();
+  budget.spend(cols * rows);
+  const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+  const g = cv.getContext('2d');
+  const jobs = [];
+  for (let y = 0; y < rows; y++) for (let x = 0; x < cols; x++) {
+    jobs.push((async () => {
+      const r = await fetch(SV.tileUrl(m.panoId, z, x, y));
+      if (!r.ok) return;
+      const bmp = await createImageBitmap(await r.blob());
+      g.drawImage(bmp, x * tw, y * th);
+      bmp.close && bmp.close();
+    })());
+  }
+  await Promise.all(jobs);
+  return canvasToTexture(cv);
+}
+
+async function googleWalk(fromMeta, travel, aim, step) {
+  let cur = fromMeta, dist = 0, heading = travel, hops = 0;
+  while (dist < step && hops < 25) {
+    const links = (cur.links || []).filter(l => l.panoId);
+    if (!links.length) break;
+    let cands = links.filter(l => Math.abs(angDiff(heading, l.heading)) < 100), uturn = false;
+    if (!cands.length) { cands = links; uturn = true; }
+    const target = uturn ? heading + 180 : aim;
+    cands.sort((p, q) => Math.abs(angDiff(target, p.heading)) - Math.abs(angDiff(target, q.heading)));
+    const nm = await SV.meta(cands[0].panoId);
+    const d = haversine(cur, nm);
+    heading = d > 0.5 ? bearing(cur, nm) : cands[0].heading;
+    dist += d; cur = nm; hops++;
+    if (uturn) aim = heading;
+  }
+  if (cur === fromMeta) return null;
+  return { meta: cur, dist: Math.max(dist, 1), heading };
+}
+
+const gnode = m => ({ meta: m, lat: m.lat, lng: m.lng, center: m.heading || 0 });
+const GoogleSource = {
+  name: 'google',
+  async init(c) { if (!c.key) throw new Error('Enter your Google Maps API key.'); await SV.init(c.key); },
+  async start(s) {
+    if (!s.panoId && s.lat == null) throw new Error('Google needs a “lat, lng” or Google Maps link as the start.');
+    const m = await SV.meta(s.panoId || await SV.findPano(s.lat, s.lng));
+    return { node: gnode(m), heading: s.heading ?? m.heading ?? 0 };
+  },
+  async findRandom(lat, lng) {
+    try { return { panoId: await SV.findPano(lat, lng, 1000), heading: null }; }
+    catch (e) { if (e instanceof BudgetError) throw e; return null; }
+  },
+  async next(from, travel, aim, step) {
+    const k = await googleWalk(from.meta, travel, aim, step);
+    return k ? { node: gnode(k.meta), dist: k.dist, heading: k.heading } : null;
+  },
+  texture(node, q) { return loadGooglePano(node.meta, q); },
+  credit(node) { return node.meta.copyright || 'Imagery © Google'; },
+};
+
+/* =====================================================================
+   RANDOM RIDES — cities with good 360° coverage; we jitter ~±9 km
+   around one and look for imagery there.
+   ===================================================================== */
+const RANDOM_PLACES = [
+  [48.8566, 2.3522, 'Paris'], [51.5074, -0.1278, 'London'], [52.3676, 4.9041, 'Amsterdam'],
+  [52.52, 13.405, 'Berlin'], [41.3874, 2.1686, 'Barcelona'], [41.9028, 12.4964, 'Rome'],
+  [55.6761, 12.5683, 'Copenhagen'], [59.3293, 18.0686, 'Stockholm'], [60.1699, 24.9384, 'Helsinki'],
+  [50.0755, 14.4378, 'Prague'], [48.2082, 16.3738, 'Vienna'], [47.3769, 8.5417, 'Zurich'],
+  [38.7223, -9.1393, 'Lisbon'], [40.7128, -74.006, 'New York'], [37.7749, -122.4194, 'San Francisco'],
+  [47.6062, -122.3321, 'Seattle'], [49.2827, -123.1207, 'Vancouver'], [45.5017, -73.5673, 'Montreal'],
+  [19.4326, -99.1332, 'Mexico City'], [4.711, -74.0721, 'Bogotá'], [-12.0464, -77.0428, 'Lima'],
+  [-33.4489, -70.6693, 'Santiago'], [-34.6037, -58.3816, 'Buenos Aires'], [-23.5505, -46.6333, 'São Paulo'],
+  [-33.9249, 18.4241, 'Cape Town'], [-1.2921, 36.8219, 'Nairobi'], [35.6762, 139.6503, 'Tokyo'],
+  [35.0116, 135.7681, 'Kyoto'], [37.5665, 126.978, 'Seoul'], [1.3521, 103.8198, 'Singapore'],
+  [-33.8688, 151.2093, 'Sydney'], [-37.8136, 144.9631, 'Melbourne'], [-36.8485, 174.7633, 'Auckland'],
+];
+async function pickRandomStart(src, onTry, tries = 10) {
+  for (let i = 0; i < tries; i++) {
+    const [la, lo, name] = RANDOM_PLACES[Math.floor(Math.random() * RANDOM_PLACES.length)];
+    const lat = la + (Math.random() - 0.5) * 0.16;
+    const lng = lo + (Math.random() - 0.5) * 0.16 / Math.cos(deg(la));
+    onTry && onTry(name, i + 1, tries);
+    try {
+      const spec = await src.findRandom(lat, lng);
+      if (spec) return { spec, name };
+    } catch (e) { if (e instanceof BudgetError) throw e; }
+  }
+  throw new Error('No 360° imagery found on this spin — press 🎲 again.');
+}
+
+/* =====================================================================
+   SAVED TRACKS — one localStorage entry per ride plus a small index.
+   A track: { id, name, src, started, updated, km,
+              pts: [[epochMs, lat, lng], …], last: { ref, lat, lng, heading } }
+   `ref` is the Mapillary image id or Google pano id of the last stop.
+   ===================================================================== */
+const TRACK_INDEX = 'pedalsv-tracks';
+const tracks = {
+  list() { return store.get(TRACK_INDEX, []); },
+  get(id) { return store.get('pedalsv-track-' + id, null); },
+  save(tr) {
+    const meta = { id: tr.id, name: tr.name, src: tr.src, started: tr.started, updated: tr.updated, km: tr.km, n: tr.pts.length };
+    const idx = this.list().filter(x => x.id !== tr.id); idx.unshift(meta);
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        localStorage.setItem('pedalsv-track-' + tr.id, JSON.stringify(tr));
+        localStorage.setItem(TRACK_INDEX, JSON.stringify(idx));
+        return true;
+      } catch (e) {
+        // storage full → drop the oldest other ride and retry
+        const old = idx.length > 1 ? idx.pop() : null;
+        if (!old) return false;
+        try { localStorage.removeItem('pedalsv-track-' + old.id); } catch (_) {}
+      }
+    }
+    return false;
+  },
+  remove(id) {
+    try { localStorage.removeItem('pedalsv-track-' + id); } catch (e) {}
+    store.set(TRACK_INDEX, this.list().filter(x => x.id !== id));
+  },
+};
+
+function trackToGpx(tr) {
+  const esc = s => String(s).replace(/[<&>"]/g, c => ({ '<': '&lt;', '&': '&amp;', '>': '&gt;', '"': '&quot;' }[c]));
+  const pts = tr.pts.map(([t, la, lo]) => `      <trkpt lat="${la}" lon="${lo}"><time>${new Date(t).toISOString()}</time></trkpt>`).join('\n');
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="Pedal Street View" xmlns="http://www.topografix.com/GPX/1/1">
+  <trk>
+    <name>${esc(tr.name)}</name>
+    <type>VirtualRide</type>
+    <trkseg>
+${pts}
+    </trkseg>
+  </trk>
+</gpx>
+`;
+}
+function downloadText(text, filename, type) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], { type }));
+  a.download = filename; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+
+/* =====================================================================
+   VIEWER MODE (Quest)
+   ===================================================================== */
+function startViewer() {
+  $('home').hidden = true; $('viewer').hidden = false;
+  const status = t => $('vStatus').textContent = t;
+
+  // --- settings ---
+  const fields = { vSrc: 'pedalsv-src', vMly: 'pedalsv-mly', vKey: 'pedalsv-key', vStart: 'pedalsv-start', vZoom: 'pedalsv-zoom', vStep: 'pedalsv-step', vBudget: 'pedalsv-budget', vKpr: 'pedalsv-kpr', vSource: 'pedalsv-cadence' };
+  for (const [id, k] of Object.entries(fields)) { const v = store.get(k, null); if (v !== null) $(id).value = v; $(id).addEventListener('change', () => store.set(k, $(id).value)); }
+  const cfg = () => ({
+    src: $('vSrc').value, mlyToken: $('vMly').value.trim(), key: $('vKey').value.trim(),
+    zoom: +$('vZoom').value, step: Math.max(3, +$('vStep').value || 15),
+    kpr: +$('vKpr').value || 0.3, source: $('vSource').value,
+  });
+  const syncSrcUI = () => {
+    const g = $('vSrc').value === 'google';
+    $('vKeyBox').hidden = !g; $('vMlyBox').hidden = g; $('vUsedLine').hidden = !g;
+  };
+  $('vSrc').addEventListener('change', syncSrcUI); syncSrcUI();
+  budget.limit = +$('vBudget').value || 0;
+  $('vBudget').addEventListener('change', () => budget.limit = +$('vBudget').value || 0);
+  $('vUsed').textContent = budget.used();
+  $('vManual').addEventListener('input', () => $('vManVal').textContent = $('vManual').value);
+
+  // --- phone link ---
+  const phone = { rpm: 0, last: 0 };
+  let peer;
+  function openPeer() {
+    const code = String(Math.floor(1000 + Math.random() * 9000));
+    peer = new Peer(PEER_PREFIX + code);
+    peer.on('open', () => $('vCode').textContent = code);
+    peer.on('error', err => {
+      if (err.type === 'unavailable-id') { peer.destroy(); openPeer(); }
+      else $('vLink').textContent = 'Link error: ' + (err.type || err);
+    });
+    peer.on('disconnected', () => { try { peer.reconnect(); } catch (e) {} });
+    peer.on('connection', conn => {
+      $('vLink').textContent = '✔ Phone connected';
+      conn.on('data', d => {
+        if (d.type === 'rpm') { phone.rpm = d.rpm; phone.last = performance.now(); }
+        if (d.type === 'config') {
+          if (d.mlyToken) { $('vMly').value = d.mlyToken; store.set('pedalsv-mly', d.mlyToken); }
+          if (d.key) { $('vKey').value = d.key; store.set('pedalsv-key', d.key); }
+          if (d.start) { $('vStart').value = d.start; store.set('pedalsv-start', d.start); }
+          status('Settings received from phone — press “Load start point”.');
+        }
+        if (d.type === 'random') randomRide();
+        if (d.type === 'resume') resumeLast();
+      });
+      conn.on('close', () => $('vLink').textContent = 'Phone disconnected — waiting…');
+    });
+  }
+  openPeer();
+
+  // --- three.js scene ---
+  const stage = $('stage');
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  renderer.setSize(stage.clientWidth, stage.clientHeight);
+  renderer.xr.enabled = true;
+  renderer.xr.setReferenceSpaceType('local');
+  stage.appendChild(renderer.domElement);
+  // Enter-VR button with plain-language reasons when VR isn't available
+  const vrBtn = document.createElement('button'); vrBtn.style.width = '100%';
+  $('vrSlot').appendChild(vrBtn);
+  const vrOff = t => { vrBtn.disabled = true; vrBtn.className = 'sec'; vrBtn.textContent = t; };
+  let xrSession = null;
+  if (!window.isSecureContext) vrOff('VR needs https — open the GitHub Pages link, not a local file');
+  else if (!navigator.xr) vrOff('No VR here — open this page in the Meta Quest Browser');
+  else navigator.xr.isSessionSupported('immersive-vr').then(ok => {
+    if (!ok) return vrOff(window.self !== window.top
+      ? 'VR is blocked inside this preview — open the page directly in the Quest Browser'
+      : 'No headset found — open this page in the Meta Quest Browser');
+    vrBtn.disabled = false; vrBtn.className = ''; vrBtn.textContent = 'Enter VR';
+    vrBtn.onclick = async () => {
+      if (xrSession) return xrSession.end();
+      try {
+        xrSession = await navigator.xr.requestSession('immersive-vr', { optionalFeatures: ['local-floor'] });
+        xrSession.addEventListener('end', () => { xrSession = null; vrBtn.textContent = 'Enter VR'; });
+        await renderer.xr.setSession(xrSession);
+        vrBtn.textContent = 'Exit VR';
+      } catch (e) { status('⚠ Could not start VR: ' + e.message); xrSession = null; }
+    };
+  }).catch(() => vrOff('No VR here — open this page in the Meta Quest Browser'));
+
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(75, stage.clientWidth / stage.clientHeight, 0.05, 200);
+  camera.rotation.order = 'YXZ';
+  addEventListener('resize', () => {
+    renderer.setSize(stage.clientWidth, stage.clientHeight);
+    camera.aspect = stage.clientWidth / stage.clientHeight; camera.updateProjectionMatrix();
+  });
+
+  let drag = null;
+  stage.addEventListener('pointerdown', e => drag = { x: e.clientX, y: e.clientY, yaw: camera.rotation.y, pitch: camera.rotation.x });
+  addEventListener('pointerup', () => drag = null);
+  addEventListener('pointermove', e => {
+    if (!drag) return;
+    camera.rotation.y = drag.yaw + (e.clientX - drag.x) * 0.005;
+    camera.rotation.x = Math.max(-1.4, Math.min(1.4, drag.pitch + (e.clientY - drag.y) * 0.005));
+  });
+
+  const geo = new THREE.SphereGeometry(50, 64, 32); geo.scale(-1, 1, 1);
+  const makeSphere = () => { const s = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false })); scene.add(s); return s; };
+  let front = makeSphere(), back = makeSphere();
+  let fade = 1;
+
+  const hudCv = document.createElement('canvas'); hudCv.width = 1024; hudCv.height = 384;
+  const hudTex = new THREE.CanvasTexture(hudCv); hudTex.colorSpace = THREE.SRGBColorSpace;
+  const hud = new THREE.Mesh(new THREE.PlaneGeometry(0.8, 0.3), new THREE.MeshBasicMaterial({ map: hudTex, transparent: true, depthTest: false }));
+  hud.position.set(0, -0.55, -1.0); hud.rotation.x = -0.55; hud.renderOrder = 10;
+  scene.add(hud);
+
+  const ctrls = [0, 1].map(i => { const c = renderer.xr.getController(i); scene.add(c); return { c, est: new CadenceEstimator({ minStd: 0.01 }) }; });
+  let ctrlRpm = 0;
+
+  // --- ride state ---
+  let src = MapillarySource;
+  const ride = { cur: null, next: null, preparing: false, progress: 0, T: 0, Tdisp: 0, odo: 0, msg: '', retryAt: 0 };
+
+  function currentRpm() {
+    const c = cfg();
+    if (c.source === 'manual') return +$('vManual').value;
+    if (c.source === 'controller') return ctrlRpm;
+    return performance.now() - phone.last < 3000 ? phone.rpm : 0;
+  }
+
+  const fwd = new THREE.Vector3();
+  function gazeCompass() {
+    const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
+    cam.getWorldDirection(fwd);
+    return (THREE.MathUtils.radToDeg(Math.atan2(fwd.x, -fwd.z)) + ride.Tdisp + 360) % 360;
+  }
+
+  // equirect centre (u=0.5) must point at the image's compass `center`,
+  // and the current travel heading must point straight ahead (-Z)
+  function placeSphere(s) {
+    if (s.userData.H === undefined) return;
+    s.rotation.y = deg(270 - s.userData.H + ride.Tdisp);
+  }
+
+  function showStop(k) {
+    [front, back] = [back, front];
+    if (front.material.map) front.material.map.dispose();
+    front.material.map = k.tex; front.material.needsUpdate = true;
+    front.userData.H = k.node.center;
+    front.position.set(0, 0, 0);
+    front.material.opacity = 0; fade = 0;
+    ride.cur = k; ride.T = k.heading;
+    recordStop(k);
+  }
+
+  // --- track recording ---
+  let track = null, trackDirty = false, trackSavedAt = 0;
+  function newTrack(name) {
+    track = { id: Date.now().toString(36), name, src: src.name, started: Date.now(), updated: Date.now(), km: 0, pts: [], last: null };
+    trackDirty = false;
+  }
+  function recordStop(k) {
+    if (!track) return;
+    const n = k.node;
+    track.pts.push([Date.now(), +n.lat.toFixed(6), +n.lng.toFixed(6)]);
+    track.last = { ref: src.name === 'google' ? n.meta.panoId : n.id, lat: n.lat, lng: n.lng, heading: k.heading };
+    track.updated = Date.now(); trackDirty = true;
+    if (Date.now() - trackSavedAt > 10000) flushTrack();
+  }
+  function flushTrack() {
+    if (!track || !trackDirty || track.pts.length < 2) return;
+    track.km = ride.odo / 1000;
+    if (!tracks.save(track)) ride.msg = '⚠ Could not save the ride (device storage full)';
+    trackDirty = false; trackSavedAt = Date.now();
+    refreshTrackUI();
+  }
+  addEventListener('pagehide', flushTrack);
+  document.addEventListener('visibilitychange', flushTrack);
+  setInterval(flushTrack, 15000);
+
+  function refreshTrackUI() {
+    const list = tracks.list(), sel = $('vTracks'), keep = sel.value;
+    sel.innerHTML = '';
+    for (const t of list) {
+      const o = document.createElement('option');
+      const d = new Date(t.started);
+      o.value = t.id;
+      o.textContent = `${d.toLocaleDateString()} ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · ${t.name} · ${(t.km || 0).toFixed(2)} km`;
+      sel.appendChild(o);
+    }
+    if (!list.length) { const o = document.createElement('option'); o.textContent = 'No saved rides yet'; o.value = ''; sel.appendChild(o); }
+    else if (list.some(t => t.id === keep)) sel.value = keep;
+    const has = list.length > 0;
+    for (const id of ['vResumeLast', 'vResumeSel', 'vGpx', 'vDelTrack']) $(id).disabled = !has;
+    $('vResumeLast').textContent = has ? `▶ Continue last ride (${list[0].name}, ${(list[0].km || 0).toFixed(2)} km)` : '▶ Continue last ride';
+  }
+  refreshTrackUI();
+
+  async function prepareNext() {
+    if (ride.preparing || ride.next || !ride.cur) return;
+    ride.preparing = true;
+    try {
+      const gaze = gazeCompass();
+      const aim = Math.abs(angDiff(ride.T, gaze)) > 35 ? gaze : ride.T;
+      const k = await src.next(ride.cur.node, ride.T, aim, cfg().step);
+      if (!k) { ride.msg = 'End of the road — no more imagery here.'; ride.retryAt = performance.now() + 5000; return; }
+      k.tex = await src.texture(k.node, cfg().zoom);
+      ride.next = k; ride.msg = '';
+    } catch (e) {
+      ride.msg = e.message; ride.retryAt = performance.now() + (e instanceof BudgetError ? 60000 : 5000);
+    } finally { ride.preparing = false; }
+  }
+
+  let loading = false;
+  async function loadRide(getStart) {
+    if (loading) return; loading = true;
+    const c = cfg(); budget.limit = +$('vBudget').value || 0;
+    if (c.mlyToken) store.set('pedalsv-mly', c.mlyToken);
+    if (c.key) store.set('pedalsv-key', c.key);
+    store.set('pedalsv-start', $('vStart').value);
+    const say = t => { status(t); ride.msg = t; };
+    try {
+      src = c.src === 'google' ? GoogleSource : MapillarySource;
+      say('Connecting to ' + (src.name === 'google' ? 'Google' : 'Mapillary') + '…');
+      await src.init(c);
+      const { start, label, resume } = await getStart(say);
+      say('Finding 360° imagery…');
+      const { node, heading } = await src.start(start);
+      say('Loading image…');
+      const tex = await src.texture(node, c.zoom);
+      // wait for any in-flight prefetch of the old ride, then reset
+      while (ride.preparing) await new Promise(r => setTimeout(r, 100));
+      if (ride.next && ride.next.tex) ride.next.tex.dispose();
+      ride.T = ride.Tdisp = heading; ride.next = null; ride.progress = 0; ride.retryAt = 0;
+      // close out the previous ride, then start a new track or continue the resumed one
+      flushTrack();
+      if (resume) { track = resume; ride.odo = (resume.km || 0) * 1000; }
+      else { newTrack(label ? label.replace(/^Somewhere around /, '') : `Ride from ${node.lat.toFixed(4)}, ${node.lng.toFixed(4)}`); ride.odo = 0; }
+      showStop({ node, tex, heading, dist: 0 });
+      ride.msg = label ? '🎲 ' + label : '';
+      prepareNext();
+      status('✔ Ready' + (label ? ' — ' + label : '') + '. Press “Enter VR” and start pedalling. ' + src.credit(node));
+    } catch (e) { say('⚠ ' + e.message); }
+    finally { loading = false; }
+  }
+
+  $('vStartBtn').onclick = () => loadRide(async () => {
+    const start = parseStart($('vStart').value);
+    if (!start) throw new Error('Start must be a Mapillary image link, “lat, lng”, or a Google Maps link.');
+    return { start };
+  });
+  const randomRide = () => loadRide(async say => {
+    const { spec, name } = await pickRandomStart(src, (n, i, t) => say(`🎲 Looking around ${n}… (${i}/${t})`));
+    return { start: spec, label: 'Somewhere around ' + name };
+  });
+  $('vRandomBtn').onclick = randomRide;
+
+  function resumeTrack(id) {
+    const tr = tracks.get(id);
+    if (!tr || !tr.last) return status('That ride has no saved position.');
+    $('vSrc').value = tr.src; store.set('pedalsv-src', tr.src); syncSrcUI();
+    const l = tr.last;
+    const start = tr.src === 'google'
+      ? { panoId: l.ref, heading: l.heading }
+      : { imageId: l.ref, lat: null, lng: null, heading: l.heading };
+    return loadRide(async () => ({ start, label: 'Resuming ' + tr.name, resume: tr }));
+  }
+  const resumeLast = () => {
+    const l = tracks.list()[0];
+    if (!l) { status('No saved rides yet.'); ride.msg = 'No saved rides yet'; return; }
+    resumeTrack(l.id);
+  };
+  $('vResumeLast').onclick = resumeLast;
+  $('vResumeSel').onclick = () => $('vTracks').value && resumeTrack($('vTracks').value);
+  $('vGpx').onclick = () => {
+    flushTrack();
+    const tr = tracks.get($('vTracks').value); if (!tr) return;
+    downloadText(trackToGpx(tr), `ride-${new Date(tr.started).toISOString().slice(0, 10)}-${tr.id}.gpx`, 'application/gpx+xml');
+  };
+  $('vDelTrack').onclick = () => {
+    const id = $('vTracks').value; if (!id) return;
+    const t = tracks.list().find(x => x.id === id);
+    if (!confirm(`Delete “${t ? t.name : 'this ride'}”? This can't be undone.`)) return;
+    if (track && track.id === id) track = null;
+    tracks.remove(id); refreshTrackUI();
+  };
+
+  function drawHud(rpm, kmh) {
+    const g = hudCv.getContext('2d');
+    g.clearRect(0, 0, 1024, 384);
+    g.fillStyle = 'rgba(10,12,16,0.72)'; g.beginPath(); g.roundRect(8, 8, 1008, 368, 36); g.fill();
+    g.fillStyle = '#4cc38a'; g.font = 'bold 110px system-ui'; g.fillText(Math.round(rpm), 50, 140);
+    g.fillStyle = '#e8eaf0'; g.fillText(kmh.toFixed(1), 400, 140);
+    g.fillStyle = '#9aa3b2'; g.font = '34px system-ui';
+    g.fillText('RPM', 54, 185); g.fillText('km/h', 404, 185);
+    g.fillText((ride.odo / 1000).toFixed(2) + ' km', 730, 110);
+    if (src.name === 'google') g.fillText(`tiles ${budget.used()}/${budget.limit}`, 730, 160);
+    g.fillStyle = ride.msg ? '#f0b429' : '#9aa3b2'; g.font = '30px system-ui';
+    const line = ride.msg || (ride.cur ? (ride.next ? 'Look left/right at intersections to turn' : 'Loading next view…') : 'Load a start point on the 2D page');
+    g.fillText(line.slice(0, 60), 50, 260);
+    g.fillStyle = '#6b7280'; g.font = '26px system-ui';
+    g.fillText((ride.cur ? src.credit(ride.cur.node) : '').slice(0, 64), 50, 330);
+    hudTex.needsUpdate = true;
+  }
+
+  const clock = new THREE.Clock(); let hudT = 0, ctrlT = 0;
+  renderer.setAnimationLoop(() => {
+    const dt = Math.min(clock.getDelta(), 0.1), now = performance.now();
+
+    if (renderer.xr.isPresenting && cfg().source === 'controller') {
+      for (const { c, est } of ctrls) est.push(now, c.position.x, c.position.y, c.position.z);
+      if (now - ctrlT > 250) { ctrlT = now; ctrlRpm = Math.max(...ctrls.map(o => o.est.estimate())); }
+    }
+
+    const rpm = currentRpm(), kmh = rpm * cfg().kpr, mps = kmh / 3.6;
+    if (ride.cur) {
+      ride.odo += mps * dt;
+      if (ride.next) {
+        ride.progress += mps * dt;
+        if (ride.progress >= ride.next.dist) { ride.progress -= ride.next.dist; const k = ride.next; ride.next = null; showStop(k); prepareNext(); }
+      } else {
+        ride.progress = Math.min(ride.progress + mps * dt, cfg().step);
+        if (!ride.preparing && now > ride.retryAt) prepareNext();
+      }
+      const d = angDiff(ride.Tdisp, ride.T);
+      ride.Tdisp += Math.sign(d) * Math.min(Math.abs(d), 45 * dt);
+      const segLen = ride.next ? ride.next.dist : cfg().step;
+      front.position.z = Math.min(1, ride.progress / segLen) * 2.5;
+    }
+    if (fade < 1) { fade = Math.min(1, fade + dt / 0.6); front.material.opacity = fade; back.material.opacity = 1 - fade; }
+    else back.material.opacity = 0;
+    placeSphere(front); placeSphere(back);
+
+    if (now - hudT > 250) { hudT = now; drawHud(rpm, kmh); }
+    renderer.render(scene, camera);
+  });
+}
+
+/* ---------- role selection ---------- */
+const role = new URLSearchParams(location.search).get('role');
+$('goPhone').onclick = startPhone;
+$('goViewer').onclick = startViewer;
+if (role === 'phone') startPhone();
+else if (role === 'viewer' || /OculusBrowser|Quest/i.test(navigator.userAgent)) startViewer();
+</script>
+</body>
+</html>
