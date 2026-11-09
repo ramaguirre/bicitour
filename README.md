@@ -32,6 +32,8 @@ Mapillary only works where people have uploaded **360°** imagery, so it's best 
 
 You can also type `lat, lng`. The app grabs the nearest 360° image within a few hundred metres.
 
+**Or press 🗺 Pick on map** next to the start field. Zoom in and tap anywhere; bright green lines are 360° Mapillary imagery (they appear once your token is entered). Then press *Load start point*. The map opens at your current start or where your last ride ended.
+
 **Or press 🎲 Random ride.** The app picks one of ~30 cities worldwide, jumps to a random spot within ~9 km of it, and starts you on a 360° sequence with road ahead. The phone has a 🎲 button too, so you can re-roll without taking the headset off.
 
 The app follows the sequence the way it was captured. When it ends, or when you look left or right at a junction, it jumps to another nearby 360° sequence heading that way. If there's nothing, it turns you around.
@@ -47,6 +49,15 @@ By default the cadence comes from a **Quest controller strapped to your thigh**.
 Keep the other controller in your hand or on the handlebar. It's ignored unless it moves rhythmically.
 
 **Using the phone instead:** set *Cadence source* to *Phone in pocket*. Then open the URL on the phone → *I'm the phone* → enter the 4-digit code from the headset → Connect → *Pocket mode*, and pocket it. You can also pair the phone just as a remote for *Continue last ride* and *Random ride*, or to send your token to the headset.
+
+## Steering in VR
+
+- **Intersections:** when there's more than one way to go, arrows appear on the road ahead, one per direction. The **green** arrow is the way you'll go (straight by default); the others are white. **Look at an arrow for 1.5 s** to take it. It fills green while you look, and the HUD shows your choice, e.g. "Intersection · right".
+- **Rear-view mirror:** top centre of your view, showing the street behind you. **Look at it for 2 s** to turn around. A green bar fills under it while you look. The view blinks to black briefly on U-turns and sharp turns so the world doesn't spin around you.
+- **Hand controller** (the one that isn't on your leg): thumbstick **←/→** picks a turn, **↑/↓** changes speed, **B or Y** turns around.
+- **Phone or 2D page:** *Turn around*, *Speed −* and *Speed +* buttons.
+
+**Speed** is the *km/h per RPM* setting (default 0.3: 80 RPM = 24 km/h). Each Speed −/+ press changes it by 0.01 and is saved.
 
 ## Saved rides
 

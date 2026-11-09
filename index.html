@@ -25,6 +25,7 @@
   #stage { width:100%; height:55vh; border-radius:12px; overflow:hidden; background:#000; position:relative; touch-action:none; }
   #vrSlot { position:relative; height:60px; margin-top:10px; }
   #vrSlot button { position:static !important; }
+  #map { width:100%; height:55vh; border-radius:10px; margin:10px 0 6px; background:#1b1f27; }
   #pocket { position:fixed; inset:0; background:#000; color:#333; display:none; align-items:center; justify-content:center; text-align:center; z-index:10; font-size:14px; user-select:none; }
   [hidden] { display:none !important; }
 </style>
@@ -80,7 +81,12 @@
       <button id="pResume" class="sec">▶ Continue last ride</button>
       <button id="pRandom" class="sec">🎲 Random ride</button>
     </div>
-    <p class="muted">Both work while you're in VR.</p>
+    <div class="row" style="margin-top:10px">
+      <button id="pTurn" class="sec">↩ Turn around</button>
+      <button id="pSlower" class="sec">Speed −</button>
+      <button id="pFaster" class="sec">Speed +</button>
+    </div>
+    <p class="muted">All of these work while you're in VR.</p>
   </div>
   <div class="card">
     <button id="pPocket" style="width:100%">Pocket mode (black screen, stays awake)</button>
@@ -123,7 +129,14 @@
       <input id="vKey" type="password" autocomplete="off">
     </div>
     <label>Start: Mapillary image link, “lat, lng”, or a Google Maps link</label>
-    <input id="vStart" placeholder="https://www.mapillary.com/app/?pKey=…">
+    <div class="row">
+      <input id="vStart" placeholder="https://www.mapillary.com/app/?pKey=…" style="flex:3 1 220px">
+      <button id="vMapBtn" class="sec" style="flex:1 1 120px">🗺 Pick on map</button>
+    </div>
+    <div id="mapBox" hidden>
+      <div id="map"></div>
+      <div class="muted" id="mapHint">Tap the map to set the start. Green lines = 360° imagery (Mapillary).</div>
+    </div>
     <div class="row">
       <div><label>Image quality</label>
         <select id="vZoom">
@@ -153,9 +166,19 @@
     </div>
     <div class="status" id="vStatus">Set your token and start point, then load.</div>
   </div>
+  <div class="card">
+    <h2 style="margin-top:0">Ride controls</h2>
+    <div class="row">
+      <button id="vTurn" class="sec">↩ Turn around</button>
+      <button id="vSlower" class="sec">Speed −</button>
+      <button id="vFaster" class="sec">Speed +</button>
+    </div>
+    <p class="muted">In VR: look at the mirror for 2 s to turn around · look at an intersection arrow for 1.5 s to take it ·
+      hand controller: thumbstick ←/→ pick a turn, ↑/↓ speed, B or Y turn around.</p>
+  </div>
   <div id="stage"></div>
   <div id="vrSlot"></div>
-  <p class="muted">Look where you want to go at intersections. Drag the preview to look around on a flat screen.</p>
+  <p class="muted">Drag the preview to look around on a flat screen.</p>
 </main>
 
 <script type="module">
@@ -321,6 +344,13 @@ function startPhone() {
     if (!conn || !conn.open) return status('Connect to the headset first.');
     conn.send({ type: 'resume' }); status('▶ Asked headset to continue the last ride');
   };
+  const remote = (msg, label) => () => {
+    if (!conn || !conn.open) return status('Connect to the headset first.');
+    conn.send(msg); status(label);
+  };
+  $('pTurn').onclick = remote({ type: 'turn' }, '↩ Turning around');
+  $('pSlower').onclick = remote({ type: 'kpr', delta: -0.01 }, 'Speed −');
+  $('pFaster').onclick = remote({ type: 'kpr', delta: 0.01 }, 'Speed +');
 
   const pocket = $('pocket'); let holdTimer = null;
   $('pPocket').onclick = () => { pocket.style.display = 'flex'; requestWake(); };
@@ -348,7 +378,7 @@ function parseStart(s) {
   const pk = s.match(/[?&]pKey=(\d+)/) || s.match(/^(\d{6,})$/);
   const ll = s.match(/[?&]lat=(-?\d+(?:\.\d+)?).*?[?&]lng=(-?\d+(?:\.\d+)?)/)
     || s.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/) || s.match(/!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/)
-    || s.match(/^(-?\d+\.\d+)\s*,\s*(-?\d+\.\d+)$/);
+    || s.match(/^(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)$/);
   if (!pk && !ll) return null;
   const h = s.match(/,(\d+(?:\.\d+)?)h[,/]/);
   return { imageId: pk ? pk[1] : null, lat: ll ? +ll[1] : null, lng: ll ? +ll[2] : null, heading: h ? +h[1] : null };
@@ -462,7 +492,9 @@ const MapillarySource = {
     return { node: { ...img, route: { ids, idx, dir } }, heading };
   },
 
-  // jump to another 360° sequence nearby that heads toward `aim`
+  reverse(node) { return { ...node, route: { ...node.route, dir: -node.route.dir } }; },
+
+  // jump to another 360° sequence nearby that heads toward `aim` (used at a sequence's end)
   async branch(cur, aim) {
     const list = (await MLY.near(cur.lat, cur.lng, 0.0004))
       .filter(n => n.pano && n.seq !== cur.seq && haversine(cur, n) < 30);
@@ -481,10 +513,39 @@ const MapillarySource = {
     return { node: { ...full, route: { ids, idx, dir } }, dist: Math.max(1, haversine(cur, full)), heading: h ?? aim };
   },
 
-  async next(from, travel, aim, step) {
-    if (Math.abs(angDiff(travel, aim)) > 40) {
-      const b = await this.branch(from, aim).catch(() => null);
-      if (b) return b;
+  // Ways you can go from here: straight along this sequence, plus other 360°
+  // sequences within ~25 m heading somewhere else. U-turns are excluded (the
+  // mirror / turn-around button handles those).
+  async exits(from, travel) {
+    const out = [];
+    const { ids, idx, dir } = from.route;
+    const fh = await this.dirHeading(ids, idx, dir);
+    if (fh != null) out.push({ heading: fh, kind: 'straight' });
+    const list = (await MLY.near(from.lat, from.lng, 0.00025))
+      .filter(n => n.pano && n.seq && n.seq !== from.seq && haversine(from, n) < 25);
+    const bySeq = new Map();
+    for (const n of list) {
+      const d = haversine(from, n);
+      if (d > 5 && Math.abs(angDiff(travel, bearing(from, n))) > 110) continue;   // behind us
+      const b = bySeq.get(n.seq); if (!b || d < b.d) bySeq.set(n.seq, { n, d });
+    }
+    for (const { n } of [...bySeq.values()].sort((a, b) => a.d - b.d).slice(0, 5)) {
+      const sids = await MLY.seqIds(n.seq), sidx = sids.indexOf(n.id);
+      if (sidx < 0) continue;
+      for (const sdir of [1, -1]) {
+        const h = await this.dirHeading(sids, sidx, sdir);
+        if (h == null || Math.abs(angDiff(travel, h)) > 150) continue;
+        if (out.some(e => Math.abs(angDiff(e.heading, h)) < 30)) continue;
+        out.push({ heading: h, kind: 'branch', imageId: n.id, ids: sids, idx: sidx, dir: sdir });
+      }
+    }
+    return out.slice(0, 5);
+  },
+
+  async next(from, travel, exit, step) {
+    if (exit && exit.kind === 'branch') {
+      const full = await MLY.one(exit.imageId);
+      return { node: { ...full, route: { ids: exit.ids, idx: exit.idx, dir: exit.dir } }, dist: Math.max(1, haversine(from, full)), heading: exit.heading };
     }
     let { ids, idx, dir } = from.route, cur = from, dist = 0, heading = travel, flips = 0;
     while (dist < step) {
@@ -641,10 +702,19 @@ const GoogleSource = {
     try { return { panoId: await SV.findPano(lat, lng, 1000), heading: null }; }
     catch (e) { if (e instanceof BudgetError) throw e; return null; }
   },
-  async next(from, travel, aim, step) {
-    const k = await googleWalk(from.meta, travel, aim, step);
+  async exits(from, travel) {
+    const out = [];
+    const links = (from.meta.links || []).filter(l => l.panoId && Math.abs(angDiff(travel, l.heading)) <= 150)
+      .sort((a, b) => Math.abs(angDiff(travel, a.heading)) - Math.abs(angDiff(travel, b.heading)));
+    for (const l of links) if (!out.some(e => Math.abs(angDiff(e.heading, l.heading)) < 30)) out.push({ heading: l.heading, kind: 'link' });
+    return out;
+  },
+  async next(from, travel, exit, step) {
+    const k = await googleWalk(from.meta, travel, exit ? exit.heading : travel, step);
     return k ? { node: gnode(k.meta), dist: k.dist, heading: k.heading } : null;
   },
+  // Google follows links by heading, so a U-turn just needs the travel heading flipped.
+  reverse(node) { return node; },
   texture(node, q) { return loadGooglePano(node.meta, q); },
   credit(node) { return node.meta.copyright || 'Imagery © Google'; },
 };
@@ -784,6 +854,8 @@ function startViewer() {
         }
         if (d.type === 'random') randomRide();
         if (d.type === 'resume') resumeLast();
+        if (d.type === 'turn') turnAround();
+        if (d.type === 'kpr') nudgeKpr(d.delta);
       });
       conn.on('close', () => $('vLink').textContent = 'Phone disconnected — waiting…');
     });
@@ -843,31 +915,68 @@ function startViewer() {
   let front = makeSphere(), back = makeSphere();
   let fade = 1;
 
-  const hudCv = document.createElement('canvas'); hudCv.width = 1024; hudCv.height = 384;
+  // --- in-VR UI (hidden while the mirror renders, so it never shows in the mirror) ---
+  const ui = new THREE.Group(); scene.add(ui);
+  const uiMat = (color, opacity = 1) => new THREE.MeshBasicMaterial({ color, transparent: true, opacity, depthTest: false, depthWrite: false, side: THREE.DoubleSide });
+
+  // HUD: small strip low in the forward view
+  const HUD_W = 768, HUD_H = 224;
+  const hudCv = document.createElement('canvas'); hudCv.width = HUD_W; hudCv.height = HUD_H;
   const hudTex = new THREE.CanvasTexture(hudCv); hudTex.colorSpace = THREE.SRGBColorSpace;
-  const hud = new THREE.Mesh(new THREE.PlaneGeometry(0.8, 0.3), new THREE.MeshBasicMaterial({ map: hudTex, transparent: true, depthTest: false }));
-  hud.position.set(0, -0.55, -1.0); hud.rotation.x = -0.55; hud.renderOrder = 10;
-  scene.add(hud);
+  const hud = new THREE.Mesh(new THREE.PlaneGeometry(0.3, 0.3 * HUD_H / HUD_W), new THREE.MeshBasicMaterial({ map: hudTex, transparent: true, depthTest: false, depthWrite: false }));
+  hud.position.set(0, -0.5, -0.75); hud.rotation.x = -0.6; hud.renderOrder = 20;   // ~33° down, clear of the arrows (~20° down)
+  ui.add(hud);
+
+  // Rear-view mirror: a camera looking backwards renders into a texture, flipped left-right like a real mirror
+  const mirrorRT = new THREE.WebGLRenderTarget(512, 160);
+  mirrorRT.texture.repeat.x = -1; mirrorRT.texture.offset.x = 1;
+  const mirrorCam = new THREE.PerspectiveCamera(28, 512 / 160, 0.05, 200);
+  mirrorCam.rotation.y = Math.PI;
+  const mirror = new THREE.Group(); mirror.position.set(0, 0.26, -0.85); mirror.rotation.x = 0.25; ui.add(mirror);
+  const mFrame = new THREE.Mesh(new THREE.PlaneGeometry(0.34, 0.12), uiMat(0x111111, 0.9)); mFrame.renderOrder = 20; mirror.add(mFrame);
+  // transparent:true puts the glass in the overlay pass, after the panorama spheres
+  const mGlass = new THREE.Mesh(new THREE.PlaneGeometry(0.32, 0.1), new THREE.MeshBasicMaterial({ map: mirrorRT.texture, transparent: true, depthTest: false, depthWrite: false }));
+  mGlass.position.z = 0.001; mGlass.renderOrder = 21; mirror.add(mGlass);
+  const mBar = new THREE.Mesh(new THREE.PlaneGeometry(0.32, 0.008), uiMat(0x4cc38a)); // dwell progress
+  mBar.position.set(0, -0.068, 0.002); mBar.scale.x = 1e-4; mBar.renderOrder = 22; mirror.add(mBar);
+
+  // Intersection arrows: one per way you can go, laid on the road ~3 m ahead, rotated to its direction
+  const arrowGeo = new THREE.ShapeGeometry(new THREE.Shape(
+    [[0, 0.36], [0.3, 0.02], [0.12, 0.02], [0.12, -0.3], [-0.12, -0.3], [-0.12, 0.02], [-0.3, 0.02]].map(([x, y]) => new THREE.Vector2(x, y))));
+  const arrows = [];
+  function getArrow(i) {
+    while (arrows.length <= i) {
+      const g = new THREE.Group();
+      const base = new THREE.Mesh(arrowGeo, uiMat(0xffffff, 0.45)), fill = new THREE.Mesh(arrowGeo, uiMat(0x4cc38a, 0.95));
+      for (const m of [base, fill]) { m.position.set(0, -1.15, -3.2); m.rotation.x = -1.0; g.add(m); }
+      base.renderOrder = 15; fill.renderOrder = 16;
+      g.userData = { base, fill }; g.visible = false; ui.add(g); arrows.push(g);
+    }
+    return arrows[i];
+  }
+
+  // Comfort "blink": brief fade to black when the view jumps around (U-turns, sharp turns)
+  const blinkMesh = new THREE.Mesh(new THREE.SphereGeometry(1.5, 16, 8), new THREE.MeshBasicMaterial({ color: 0, transparent: true, opacity: 0, side: THREE.BackSide, depthTest: false, depthWrite: false }));
+  blinkMesh.renderOrder = 30; ui.add(blinkMesh);
+  let blink = 0;
+  const doBlink = () => { blink = 1; };
 
   const ctrls = [0, 1].map(i => { const c = renderer.xr.getController(i); scene.add(c); return { c, est: new CadenceEstimator({ minStd: 0.01 }) }; });
   let ctrlRpm = 0;
 
   // --- ride state ---
   let src = MapillarySource;
-  const ride = { cur: null, next: null, preparing: false, progress: 0, T: 0, Tdisp: 0, odo: 0, msg: '', retryAt: 0 };
+  // gen: bumped whenever an in-flight prefetch becomes stale (new stop, new turn choice, U-turn)
+  // exits: ways you can go from the current stop; sel: index of the chosen one
+  const ride = { cur: null, next: null, preparing: false, progress: 0, T: 0, Tdisp: 0, odo: 0, msg: '', retryAt: 0,
+                 gen: 0, exits: null, sel: 0, toast: '', toastUntil: 0 };
+  const toast = (text, ms = 3000) => { ride.toast = text; ride.toastUntil = performance.now() + ms; };
 
   function currentRpm() {
     const c = cfg();
     if (c.source === 'manual') return +$('vManual').value;
     if (c.source === 'controller') return ctrlRpm;
     return performance.now() - phone.last < 3000 ? phone.rpm : 0;
-  }
-
-  const fwd = new THREE.Vector3();
-  function gazeCompass() {
-    const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
-    cam.getWorldDirection(fwd);
-    return (THREE.MathUtils.radToDeg(Math.atan2(fwd.x, -fwd.z)) + ride.Tdisp + 360) % 360;
   }
 
   // equirect centre (u=0.5) must point at the image's compass `center`,
@@ -884,9 +993,52 @@ function startViewer() {
     front.userData.H = k.node.center;
     front.position.set(0, 0, 0);
     front.material.opacity = 0; fade = 0;
+    const turn = Math.abs(angDiff(ride.Tdisp, k.heading));
     ride.cur = k; ride.T = k.heading;
+    if (turn > 60) { ride.Tdisp = k.heading; doBlink(); }   // sharp turn: snap behind a blink instead of spinning the world
+    ride.gen++; ride.exits = null; ride.sel = 0;
     recordStop(k);
   }
+
+  // --- turning ---
+  const straightIndex = ex => ex.reduce((b, e, i) => Math.abs(angDiff(ride.T, e.heading)) < Math.abs(angDiff(ride.T, ex[b].heading)) ? i : b, 0);
+  function describeTurn(h) {
+    const rel = angDiff(ride.T, h), a = Math.abs(rel);
+    if (a < 25) return 'straight';
+    return (a < 60 ? 'slight ' : a > 120 ? 'sharp ' : '') + (rel < 0 ? 'left' : 'right');
+  }
+  function dropNext() {
+    ride.gen++;
+    if (ride.next && ride.next.tex) ride.next.tex.dispose();
+    ride.next = null; ride.retryAt = 0;
+  }
+  function selectExit(i) {
+    if (!ride.exits || !ride.exits[i] || i === ride.sel) return;
+    ride.sel = i; dropNext();
+    toast('Next: ' + describeTurn(ride.exits[i].heading));
+  }
+  function cycleExit(dir) {   // dir -1 = one more to the left, +1 = one more to the right
+    if (!ride.exits || ride.exits.length < 2) return;
+    const order = ride.exits.map((e, i) => i).sort((a, b) => angDiff(ride.T, ride.exits[a].heading) - angDiff(ride.T, ride.exits[b].heading));
+    const p = order.indexOf(ride.sel);
+    selectExit(order[Math.max(0, Math.min(order.length - 1, p + dir))]);
+  }
+  function turnAround() {
+    if (!ride.cur) return;
+    dropNext();
+    ride.cur = { ...ride.cur, node: src.reverse(ride.cur.node) };
+    ride.T = (ride.T + 180) % 360; ride.Tdisp = ride.T; doBlink();
+    ride.exits = null; ride.sel = 0; ride.progress = 0;
+    toast('↩ Turned around');
+  }
+  function nudgeKpr(delta) {
+    const v = Math.min(1.5, Math.max(0.05, Math.round(((+$('vKpr').value || 0.3) + delta) * 100) / 100));
+    $('vKpr').value = v; store.set('pedalsv-kpr', String(v));
+    toast(`Speed ${v.toFixed(2)} km/h per RPM · 80 RPM = ${(80 * v).toFixed(1)} km/h`);
+  }
+  $('vTurn').onclick = turnAround;
+  $('vSlower').onclick = () => nudgeKpr(-0.01);
+  $('vFaster').onclick = () => nudgeKpr(0.01);
 
   // --- track recording ---
   let track = null, trackDirty = false, trackSavedAt = 0;
@@ -934,15 +1086,22 @@ function startViewer() {
   async function prepareNext() {
     if (ride.preparing || ride.next || !ride.cur) return;
     ride.preparing = true;
+    const gen = ride.gen, cur = ride.cur;
     try {
-      const gaze = gazeCompass();
-      const aim = Math.abs(angDiff(ride.T, gaze)) > 35 ? gaze : ride.T;
-      const k = await src.next(ride.cur.node, ride.T, aim, cfg().step);
-      if (!k) { ride.msg = 'End of the road — no more imagery here.'; ride.retryAt = performance.now() + 5000; return; }
-      k.tex = await src.texture(k.node, cfg().zoom);
-      ride.next = k; ride.msg = '';
+      if (!ride.exits) {
+        const ex = await src.exits(cur.node, ride.T).catch(() => []);
+        if (gen !== ride.gen) return;
+        ride.exits = ex; ride.sel = ex.length ? straightIndex(ex) : 0;
+      }
+      const exit = ride.exits[ride.sel] || null;
+      const k = await src.next(cur.node, ride.T, exit, cfg().step);
+      if (gen !== ride.gen) return;
+      if (!k) { ride.msg = 'End of the road — turn around or load a new start.'; ride.retryAt = performance.now() + 5000; return; }
+      const tex = await src.texture(k.node, cfg().zoom);
+      if (gen !== ride.gen) { tex.dispose(); return; }
+      k.tex = tex; ride.next = k; ride.msg = '';
     } catch (e) {
-      ride.msg = e.message; ride.retryAt = performance.now() + (e instanceof BudgetError ? 60000 : 5000);
+      if (gen === ride.gen) { ride.msg = e.message; ride.retryAt = performance.now() + (e instanceof BudgetError ? 60000 : 5000); }
     } finally { ride.preparing = false; }
   }
 
@@ -972,7 +1131,7 @@ function startViewer() {
       if (resume) { track = resume; ride.odo = (resume.km || 0) * 1000; }
       else { newTrack(label ? label.replace(/^Somewhere around /, '') : `Ride from ${node.lat.toFixed(4)}, ${node.lng.toFixed(4)}`); ride.odo = 0; }
       showStop({ node, tex, heading, dist: 0 });
-      ride.msg = label ? '🎲 ' + label : '';
+      ride.msg = ''; if (label) toast((resume ? '▶ ' : '🎲 ') + label, 6000);
       prepareNext();
       status('✔ Ready' + (label ? ' — ' + label : '') + '. Press “Enter VR” and start pedalling. ' + src.credit(node));
     } catch (e) { say('⚠ ' + e.message); }
@@ -1021,24 +1180,157 @@ function startViewer() {
   };
 
   function drawHud(rpm, kmh) {
-    const g = hudCv.getContext('2d');
-    g.clearRect(0, 0, 1024, 384);
-    g.fillStyle = 'rgba(10,12,16,0.72)'; g.beginPath(); g.roundRect(8, 8, 1008, 368, 36); g.fill();
-    g.fillStyle = '#4cc38a'; g.font = 'bold 110px system-ui'; g.fillText(Math.round(rpm), 50, 140);
-    g.fillStyle = '#e8eaf0'; g.fillText(kmh.toFixed(1), 400, 140);
-    g.fillStyle = '#9aa3b2'; g.font = '34px system-ui';
-    g.fillText('RPM', 54, 185); g.fillText('km/h', 404, 185);
-    g.fillText((ride.odo / 1000).toFixed(2) + ' km', 730, 110);
-    if (src.name === 'google') g.fillText(`tiles ${budget.used()}/${budget.limit}`, 730, 160);
-    g.fillStyle = ride.msg ? '#f0b429' : '#9aa3b2'; g.font = '30px system-ui';
-    const line = ride.msg || (ride.cur ? (ride.next ? 'Look left/right at intersections to turn' : 'Loading next view…') : 'Load a start point on the 2D page');
-    g.fillText(line.slice(0, 60), 50, 260);
-    g.fillStyle = '#6b7280'; g.font = '26px system-ui';
-    g.fillText((ride.cur ? src.credit(ride.cur.node) : '').slice(0, 64), 50, 330);
+    const g = hudCv.getContext('2d'), W = HUD_W, H = HUD_H;
+    g.clearRect(0, 0, W, H);
+    g.fillStyle = 'rgba(10,12,16,0.72)'; g.beginPath(); g.roundRect(4, 4, W - 8, H - 8, 28); g.fill();
+    const col = (x, val, unit, color) => {
+      g.textAlign = 'center';
+      g.fillStyle = color; g.font = 'bold 72px system-ui'; g.fillText(val, x, 84);
+      g.fillStyle = '#9aa3b2'; g.font = '24px system-ui'; g.fillText(unit, x, 114);
+    };
+    col(W * 0.18, String(Math.round(rpm)), 'RPM', '#4cc38a');
+    col(W * 0.5, kmh.toFixed(1), 'km/h', '#e8eaf0');
+    col(W * 0.82, (ride.odo / 1000).toFixed(2), 'km', '#e8eaf0');
+    g.textAlign = 'center';
+    let line = '', color = '#9aa3b2';
+    const nEx = ride.exits ? ride.exits.length : 0;
+    if (ride.msg) { line = ride.msg; color = '#f0b429'; }
+    else if (performance.now() < ride.toastUntil) { line = ride.toast; color = '#e8eaf0'; }
+    else if (nEx > 1) { line = `Intersection · ${describeTurn(ride.exits[ride.sel].heading)} · look at an arrow to change`; color = '#4cc38a'; }
+    else if (!ride.cur) line = 'Load a start point on the 2D page';
+    else if (!ride.next) line = 'Loading next view…';
+    g.fillStyle = color; g.font = '28px system-ui'; g.fillText(line.slice(0, 52), W / 2, 162);
+    g.fillStyle = '#6b7280'; g.font = '18px system-ui';
+    const credit = (ride.cur ? src.credit(ride.cur.node) : '') + (src.name === 'google' ? ` · tiles ${budget.used()}/${budget.limit}` : '');
+    g.fillText(credit.slice(0, 80), W / 2, 200);
     hudTex.needsUpdate = true;
   }
 
-  const clock = new THREE.Clock(); let hudT = 0, ctrlT = 0;
+  // --- gaze dwell: look at the mirror (2 s) to turn around, at an arrow (1.5 s) to take it ---
+  const DWELL_MIRROR = 2, DWELL_TURN = 1.5, LOOK_MIRROR = 0.16, LOOK_ARROW = 0.12;   // ~9° / ~7° look cones
+  const camPos = new THREE.Vector3(), fwd = new THREE.Vector3(), tmpV = new THREE.Vector3();
+  const dwell = { key: null, t: 0, done: false };
+  const lookAngle = obj => { obj.getWorldPosition(tmpV); return tmpV.sub(camPos).normalize().angleTo(fwd); };
+  function updateGaze(dt) {
+    const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
+    cam.getWorldPosition(camPos); cam.getWorldDirection(fwd);
+    const ex = ride.exits && ride.exits.length > 1 ? ride.exits : [];
+    let key = null;
+    if (ride.cur) {
+      if (lookAngle(mGlass) < LOOK_MIRROR) key = 'mirror';
+      else for (let i = 0; i < ex.length; i++) if (i !== ride.sel && arrows[i] && arrows[i].visible && lookAngle(arrows[i].userData.base) < LOOK_ARROW) { key = 'exit' + i; break; }
+    }
+    if (key !== dwell.key) Object.assign(dwell, { key, t: 0, done: false });
+    else if (key && !dwell.done) {
+      dwell.t += dt;
+      if (dwell.t >= (key === 'mirror' ? DWELL_MIRROR : DWELL_TURN)) {
+        dwell.done = true;   // fire once; looking away re-arms it
+        if (key === 'mirror') turnAround(); else selectExit(+key.slice(4));
+      }
+    }
+    mBar.scale.x = dwell.key === 'mirror' && !dwell.done ? Math.max(1e-4, dwell.t / DWELL_MIRROR) : 1e-4;
+  }
+  function updateArrows() {
+    const ex = ride.exits && ride.exits.length > 1 ? ride.exits : [];
+    if (ex.length) getArrow(ex.length - 1);
+    arrows.forEach((a, i) => {
+      a.visible = i < ex.length;
+      if (!a.visible) return;
+      a.rotation.y = -deg(angDiff(ride.Tdisp, ex[i].heading));
+      const sel = i === ride.sel;
+      const p = dwell.key === 'exit' + i && !dwell.done ? Math.min(1, dwell.t / DWELL_TURN) : 0;
+      const { base, fill } = a.userData;
+      base.material.opacity = sel ? 0.95 : 0.45;
+      base.scale.setScalar(sel ? 1.15 : 1);
+      fill.scale.setScalar(sel ? 1.15 : Math.max(1e-4, p));
+    });
+  }
+
+  // --- hand controller buttons: thumbstick ←/→ pick a turn, ↑/↓ speed, B/Y turn around ---
+  const padPrev = {};
+  function pollPads() {
+    const s = renderer.xr.getSession(); if (!s) return;
+    for (const is of s.inputSources) {
+      const gp = is.gamepad; if (!gp) continue;
+      const prev = padPrev[is.handedness] || {};
+      const x = gp.axes[2] || 0, y = gp.axes[3] || 0;
+      const sx = x > 0.7 ? 1 : x < -0.7 ? -1 : 0, sy = y > 0.7 ? 1 : y < -0.7 ? -1 : 0;
+      const b = !!(gp.buttons[5] && gp.buttons[5].pressed);
+      if (sx && sx !== prev.sx) cycleExit(sx);
+      if (sy && sy !== prev.sy) nudgeKpr(-sy * 0.01);   // stick forward (y < 0) = faster
+      if (b && !prev.b) turnAround();
+      padPrev[is.handedness] = { sx, sy, b };
+    }
+  }
+
+  function renderMirror() {
+    ui.visible = false;
+    const xrOn = renderer.xr.enabled, prevRT = renderer.getRenderTarget();
+    renderer.xr.enabled = false;
+    renderer.setRenderTarget(mirrorRT); renderer.render(scene, mirrorCam);
+    renderer.setRenderTarget(prevRT); renderer.xr.enabled = xrOn;
+    ui.visible = true;
+  }
+
+  // --- start-point map (Leaflet + CARTO/OpenStreetMap basemap, Mapillary 360° coverage overlay) ---
+  let map = null, marker = null, coverage = null, coverageToken = '';
+  const loadCss = href => new Promise(r => { const l = document.createElement('link'); l.rel = 'stylesheet'; l.href = href; l.onload = l.onerror = r; document.head.appendChild(l); });
+  const loadJs = url => new Promise((res, rej) => { const s = document.createElement('script'); s.src = url; s.onload = res; s.onerror = () => rej(new Error('Could not load the map library')); document.head.appendChild(s); });
+  function refreshCoverage() {
+    const L = window.L; if (!map || !L || !L.vectorGrid) return;
+    const token = $('vSrc').value === 'mapillary' ? $('vMly').value.trim() : '';
+    if (token === coverageToken) return;
+    if (coverage) { map.removeLayer(coverage); coverage = null; }
+    coverageToken = token; if (!token) return;
+    const pano = f => f.is_pano === true || f.is_pano === 1 || f.is_pano === 'true';
+    coverage = L.vectorGrid.protobuf('https://tiles.mapillary.com/maps/vtp/mly1_public/2/{z}/{x}/{y}?access_token=' + encodeURIComponent(token), {
+      maxNativeZoom: 14, maxZoom: 19, rendererFactory: L.canvas.tile, attribution: '© Mapillary',
+      vectorTileLayerStyles: {
+        sequence: f => pano(f) ? { color: '#05CB63', weight: 3, opacity: 0.9 } : { color: '#8a8f98', weight: 1, opacity: 0.25 },
+        image: () => [],
+        overview: f => pano(f) ? { radius: 2, weight: 0, fill: true, fillColor: '#05CB63', fillOpacity: 0.8 } : [],
+      },
+    }).addTo(map);
+  }
+  function setStartFromMap(ll) {
+    const L = window.L;
+    if (!marker) marker = L.circleMarker(ll, { radius: 9, color: '#fff', weight: 3, fillColor: '#4cc38a', fillOpacity: 1 }).addTo(map);
+    else marker.setLatLng(ll);
+    $('vStart').value = `${ll.lat.toFixed(6)}, ${ll.lng.toFixed(6)}`;
+    store.set('pedalsv-start', $('vStart').value);
+    $('mapHint').textContent = 'Start set — press “Load start point”.';
+  }
+  $('vMapBtn').onclick = async () => {
+    const box = $('mapBox');
+    box.hidden = !box.hidden;
+    if (box.hidden) return;
+    if (map) { map.invalidateSize(); refreshCoverage(); return; }
+    $('mapHint').textContent = 'Loading map…';
+    try {
+      await Promise.all([loadCss('https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/leaflet.min.css'),
+                         loadJs('https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/leaflet.min.js')]);
+      await loadJs('https://unpkg.com/leaflet.vectorgrid@1.3.0/dist/Leaflet.VectorGrid.bundled.js').catch(() => null);
+    } catch (e) { $('mapHint').textContent = '⚠ ' + e.message; return; }
+    const L = window.L;
+    const s = parseStart($('vStart').value), lastMeta = tracks.list()[0], last = lastMeta && tracks.get(lastMeta.id)?.last;
+    const here = s && s.lat != null ? [s.lat, s.lng] : last ? [last.lat, last.lng] : null;
+    map = L.map('map', { worldCopyJump: true }).setView(here || [20, 0], here ? 15 : 2);
+    // CARTO basemap (OSM data): tile.openstreetmap.org blocks apps without a proper Referer (403 "Access blocked").
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+      maxZoom: 20, subdomains: 'abcd',
+      attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors © <a href="https://carto.com/attributions">CARTO</a>'
+    }).addTo(map);
+    if (s && s.lat != null) setStartFromMap(L.latLng(s.lat, s.lng));
+    map.on('click', e => setStartFromMap(e.latlng.wrap()));
+    refreshCoverage();
+    $('mapHint').textContent = L.vectorGrid
+      ? 'Tap the map to set the start. Zoom in: bright green lines are 360° imagery.'
+      : 'Tap the map to set the start. (Coverage overlay unavailable — pick near a road.)';
+  };
+  $('vMly').addEventListener('change', refreshCoverage);
+  $('vSrc').addEventListener('change', refreshCoverage);
+
+  const clock = new THREE.Clock(); let hudT = 0, ctrlT = 0, mirrorFrame = 0;
   renderer.setAnimationLoop(() => {
     const dt = Math.min(clock.getDelta(), 0.1), now = performance.now();
 
@@ -1062,6 +1354,12 @@ function startViewer() {
       const segLen = ride.next ? ride.next.dist : cfg().step;
       front.position.z = Math.min(1, ride.progress / segLen) * 2.5;
     }
+    if (renderer.xr.isPresenting) pollPads();
+    updateArrows(); updateGaze(dt);
+    mirror.visible = !!ride.cur;
+    if (blink > 0) blink = Math.max(0, blink - dt / 0.45);
+    blinkMesh.material.opacity = blink; blinkMesh.visible = blink > 0;
+    if (ride.cur && (++mirrorFrame & 1)) renderMirror();   // every other frame is plenty
     if (fade < 1) { fade = Math.min(1, fade + dt / 0.6); front.material.opacity = fade; back.material.opacity = 1 - fade; }
     else back.material.opacity = 0;
     placeSphere(front); placeSphere(back);
